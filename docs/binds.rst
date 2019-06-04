@@ -71,3 +71,23 @@ a table object directly you will have to put it in there::
 If you specified the `__bind_key__` on your models you can use them exactly the
 way you are used to.  The model connects to the specified database connection 
 itself.
+
+Dynamic Binds Routing
+---------------------
+
+Binds can also be routed to a database connection at runtime, by configuring
+callbacks instead of a predefined connection. This feature can be used to
+support multi-tenant architecture, where several databases share the same
+schema and are served by one server that would map to the matching database
+at runtime. For example::
+
+    def _current_users_database():
+        tenant_id = flask.request.headers.get('X-TENATNT-ID')
+        return 'mysqldb://localhost/users_tenant_{}'.format(tenant_id)
+
+    SQLALCHEMY_DATABASE_URI = 'postgres://localhost/main'
+    SQLALCHEMY_BINDS = {
+        'users':        _current_users_database,
+        'appmeta':      'sqlite:////path/to/appmeta.db'
+    }
+
