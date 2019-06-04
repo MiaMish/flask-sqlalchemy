@@ -536,26 +536,17 @@ def _record_queries(app):
 
 class _EngineConnector(object):
 
-    def __init__(self, sa, app, bind=None):
+    def __init__(self, sa, app, uri):
         self._sa = sa
         self._app = app
         self._engine = None
         self._connected_for = None
-        self._bind = bind
         self._lock = Lock()
-
-    def get_uri(self):
-        if self._bind is None:
-            return self._app.config['SQLALCHEMY_DATABASE_URI']
-        binds = self._app.config.get('SQLALCHEMY_BINDS') or ()
-        assert self._bind in binds, \
-            'Bind %r is not specified.  Set it in the SQLALCHEMY_BINDS ' \
-            'configuration variable' % self._bind
-        return binds[self._bind]
+        self._uri = uri
 
     def get_engine(self):
         with self._lock:
-            uri = self.get_uri()
+            uri = self._uri
             echo = self._app.config['SQLALCHEMY_ECHO']
             if (uri, echo) == self._connected_for:
                 return self._engine
@@ -819,6 +810,11 @@ class SQLAlchemy(object):
                 'Defaulting SQLALCHEMY_DATABASE_URI to "sqlite:///:memory:".'
             )
 
+        if 'SQLALCHEMY_BINDS' in app.config:
+            for bind, value in app.config.get('SQLALCHEMY_BINDS'):
+                if not isinstance(value, string_types) and not callable(value):
+                    raise ValueError("Mapped value for bind '{}' is not a string type or callable".format(bind))
+
         app.config.setdefault('SQLALCHEMY_DATABASE_URI', 'sqlite:///:memory:')
         app.config.setdefault('SQLALCHEMY_BINDS', None)
         app.config.setdefault('SQLALCHEMY_NATIVE_UNICODE', None)
@@ -931,9 +927,27 @@ class SQLAlchemy(object):
         """
         return self.get_engine()
 
-    def make_connector(self, app=None, bind=None):
-        """Creates the connector for a given state and bind."""
-        return _EngineConnector(self, self.get_app(app), bind)
+    def make_connector(self, uri, app=None):
+        """Creates the connector for a given state and connection URI."""
+        return _EngineConnector(self, self.get_app(app), uri)
+
+    def _get_uri(self, app=None, bind=None):
+        """Evaluate the connection URI for a given bind, or the single one if no multiple
+        database configuration is used. For multi binds, if the mapped value is a callable
+        then it will be called to dynamically fetch the target URI."""
+
+        if bind is None:
+            return app.config['SQLALCHEMY_DATABASE_URI']
+        binds = app.config.get('SQLALCHEMY_BINDS') or ()
+        assert bind in binds, \
+            'Bind %r is not specified.  Set it in the SQLALCHEMY_BINDS ' \
+            'configuration variable' % bind
+        bind_value = binds[bind]  # as enforced, bind value might be a string or callable
+        if callable(bind_value):
+            uri = bind_value()
+            return uri
+        else:
+            return bind_value
 
     def get_engine(self, app=None, bind=None):
         """Returns a specific engine."""
@@ -942,11 +956,13 @@ class SQLAlchemy(object):
         state = get_state(app)
 
         with self._engine_lock:
-            connector = state.connectors.get(bind)
+            uri = self._get_uri(app, bind)
+
+            connector = state.connectors.get(uri)
 
             if connector is None:
-                connector = self.make_connector(app, bind)
-                state.connectors[bind] = connector
+                connector = self.make_connector(uri, app)
+                state.connectors[uri] = connector
 
             return connector.get_engine()
 
